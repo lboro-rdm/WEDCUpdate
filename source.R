@@ -49,6 +49,14 @@ initiate_response <- POST(
 # Parse the initiate upload response
 initiate_content <- fromJSON(content(initiate_response, as = "text", encoding = "UTF-8"))
 print(status_code(initiate_response))
+
+response_content <- fromJSON(content(response, as = "text", encoding = "UTF-8"))
+download_url_2 <- response_content$download_url
+
+
+
+
+
 upload_token <- initiate_content$upload_token
 print(paste("Upload initiated with token:", upload_token))
 
