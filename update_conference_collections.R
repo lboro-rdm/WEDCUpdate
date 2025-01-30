@@ -1,29 +1,35 @@
 library(httr2)
 library(jsonlite)
-library(dplyr)
+library(tidyverse)
 library(lubridate)
 
 # STEP 1 Download file from Figshare ------------------------------------
 
 APIkey <- Sys.getenv("APIkey")
 
-base_url <- "https://api.figshare.com/v2"
+base_url <- "https://api.figshare.com/v2/account"
 
-endpoint <- "/account/articles/28142597/files?"
-
-req <- request(paste0(base_url, endpoint))
-
-headers <- req %>% 
-  req_headers(
-    Authorization: APIKey
+fig_req <- request(base_url) %>% 
+  req_url_path_append(
+    "articles",
+    "28142597",
+    "files?"
   )
 
-req_perform_get <- headers %>% 
-  req_perform()
+fig_req_auth <- req_auth_bearer_token(
+  fig_req, 
+  APIkey
+  )
 
-results <- req_perform_get %>% 
+results <- req_perform(fig_req_auth) %>% 
   resp_body_json()
 
+download_url <- request(results[[1]]$download_url)
+
+download_req_auth <- req_auth_bearer_token(
+  download_url, 
+  APIkey
+)
 
 
 
