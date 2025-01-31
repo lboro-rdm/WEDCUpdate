@@ -1,174 +1,71 @@
 library(httr2)
 library(jsonlite)
 library(tidyverse)
-library(lubridate)
-
-# STEP 1 Download file from Figshare ------------------------------------
 
 APIkey <- Sys.getenv("APIkey")
-
 base_url <- "https://api.figshare.com/v2/account"
 
-fig_req <- request(base_url) %>% 
-  req_url_path_append(
-    "articles",
-    "28142597",
-    "files?"
-  )
+# Step 1: Get file --------------------------------------------------------
 
-fig_req_auth <- req_auth_bearer_token(
-  fig_req, 
-  APIkey
-  )
+article_id <- "28142597"
 
-results <- req_perform(fig_req_auth) %>% 
-  resp_body_json()
+fig_req <- request(base_url) |> 
+  req_url_path_append("articles", article_id, "files") |> 
+  req_auth_bearer_token(APIkey)
 
-download_url <- request(results[[1]]$download_url)
+file_metadata <- fig_req |> req_perform() |> resp_body_json()
 
-download_req_auth <- req_auth_bearer_token(
-  download_url, 
-  APIkey
-)
+download_url <- pluck(file_metadata, 1, "download_url")
 
+file_request <- request(download_url) |> 
+  req_url_query(access_token = APIkey)
 
+file_response <- req_perform(file_request)
+
+content_type <- resp_headers(file_response)$`content-type`
+
+content_disposition <- resp_headers(file_response)$`content-disposition`
+
+file_name <- pluck(file_metadata, 1, "name")
+  
+writeBin(resp_body_raw(file_response), file_name)
 
 # STEP 2 Upload file to Figshare ----------------------------------------
 
+file_path <- "conference_collection_ids.csv"
+file_size <- file.info(file_path)$size
+file_md5 <- tools::md5sum(file_path)
+
+upload_init_req <- request(base_url) |> 
+  req_url_path_append("articles", article_id, "files") |> 
+  req_auth_bearer_token(APIkey) |> 
+  req_body_json(list(name = basename(file_path), size = file_size, md5 = file_md5)) |>   req_method("POST") |> 
+  req_perform()
+
+# Extract the upload URL and file ID
+upload_info <- upload_init_req |> resp_body_json()
+file_id <- basename(upload_info$location)
+
+file_info_req <- request(upload_info$location) |> 
+  req_auth_bearer_token(APIkey) |> 
+  req_perform() |> 
+  resp_body_json()
+
+upload_url <- pluck(file_info_req, "upload_url")
 
 
-# Read collection IDs and titles
-collection_data <- read.csv("collection_ids.csv", stringsAsFactors = FALSE)
-collection_ids <- collection_data$collection_id
-collection_titles <- paste0(collection_data$number, ", ", collection_data$year, " (", collection_data$location, ")")
-conference_ids <- collection_data$number
+# Step 2: Upload the File (PUT Request to Upload URL)
+upload_req <- request(upload_url) |> 
+  req_method("PUT") |> 
+  req_body_file(file_path) |> 
+  req_perform()
 
-# Initialize a data frame to store results
-article_details <- data.frame(
-  collection_title = character(),
-  conference_id = character(),
-  article_id = character(),
-  title = character(),
-  stringsAsFactors = FALSE
-)
+# Step 3: Mark Upload as Complete
+complete_req <- request(base_url) |> 
+  req_url_path_append("articles", article_id, "files", file_id) |> 
+  req_auth_bearer_token(APIkey) |> 
+  req_method("POST") |> 
+  req_perform()
 
-# Base URL for the API
-base_url <- "https://api.figshare.com/v2/articles?group="
+cat("File upload completed successfully!\n")
 
-# Function to fetch articles from a collection
-fetch_articles_from_collection <- function(collection_id, collection_title, conference_id) {
-  articles_url <- paste0(base_url, collection_id, "&page_size=1000")
-  print(articles_url)
-  articles_response <- GET(articles_url)
-  
-  if (status_code(articles_response) != 200) {
-    message("Failed to fetch articles for collection: ", collection_title)
-    return(NULL)
-  }
-  
-  articles <- fromJSON(content(articles_response, as = "text"))
-  
-  if (is.null(articles) || length(articles) == 0) {
-    message("No articles found for collection: ", collection_title)
-    return(NULL)
-  }
-  
-  # Convert conference_id to character to ensure consistency
-  data.frame(
-    collection_title = collection_title,
-    conference_id = as.character(conference_id),  # Explicit conversion to character
-    article_id = as.character(articles$id),
-    title = articles$title,
-    stringsAsFactors = FALSE
-  )
-}
-
-# Iterate through each collection and fetch articles
-for (i in seq_along(collection_ids)) {
-  collection_id <- collection_ids[i]
-  collection_title <- collection_titles[i]
-  conference_id <- conference_ids[i]
-  message("Fetching articles for collection: ", collection_title)
-  
-  # Fetch articles for the current collection
-  collection_articles <- fetch_articles_from_collection(collection_id, collection_title, conference_id)
-  
-  # If articles were fetched successfully, bind them to the main data frame
-  if (!is.null(collection_articles)) {
-    article_details <- bind_rows(article_details, collection_articles)
-  }
-}
-
-# Set the Figshare API request URL for articles
-endpoint2 <- "https://api.figshare.com/v2/articles/"
-
-# Initialize a data frame to store citation data
-combined_df <- data.frame(
-  collection_title = character(),
-  conference_id = character(),
-  article_id = character(),
-  title = character(),
-  Author = character(),
-  Year = character(),
-  hdl = character(),
-  doi = character(),
-  stringsAsFactors = FALSE
-)
-
-# Iterate through article IDs to get article citation data
-for (i in 1:nrow(article_details)) {
-  print(i)
-  article_id <- article_details$article_id[i]
-  full_url_citation <- paste0(endpoint2, article_id)
-  
-  # Get the article citation data
-  response <- GET(full_url_citation)
-  if (http_status(response)$category != "Success") {
-    warning("Failed to fetch data for article ID: ", article_id)
-    next
-  }
-  
-  citation_data <- fromJSON(content(response, "text", encoding = "UTF-8"), flatten = TRUE)
-  
-  # Extract authors, year, and handle with appropriate checks
-  Author <- if (!is.null(citation_data$authors) && nrow(citation_data$authors) > 0) {
-    paste(citation_data$authors$full_name, collapse = ", ")
-  } else {
-    NA
-  }
-  
-  year <- if (!is.null(citation_data$published_date)) {
-    year(as.Date(citation_data$published_date))
-  } else {
-    NA
-  }
-  
-  hdl <- if (!is.null(citation_data$handle) && citation_data$handle != "") {
-    paste0("https://hdl.handle.net/", citation_data$handle)
-  } else {
-    ""
-  }
-  
-  doi <- if (!is.null(citation_data$doi) && citation_data$doi != "") {
-    paste0("https://doi.org/", citation_data$doi)
-  } else {
-    ""
-  }
-  
-  # Append the citation data to the combined data frame
-  combined_df <- rbind(combined_df, data.frame(
-    collection_title = article_details$collection_title[i],
-    article_id = article_id,
-    title = article_details$title[i],
-    conference_id = article_details$conference_id[i],  # Correctly link conference_id
-    Author = Author,
-    Year = year,
-    hdl = hdl,
-    doi = doi,
-    stringsAsFactors = FALSE
-  ))
-}
-
-# Save the final dataset to a CSV file
-output_file <- "combined_data.csv"
-write.csv(combined_df, file = output_file, row.names = FALSE)
